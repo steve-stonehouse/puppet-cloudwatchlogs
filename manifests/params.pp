@@ -15,4 +15,5 @@ class cloudwatchlogs::params {
   $logging_config_file = '/etc/awslogs/awslogs_dot_log.conf'
   $region = undef
   $log_level = undef
+  $s3_source = undef
 }

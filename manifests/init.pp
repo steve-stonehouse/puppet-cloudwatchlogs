@@ -30,6 +30,7 @@ class cloudwatchlogs (
   $logging_config_file  = $::cloudwatchlogs::params::logging_config_file,
   $region               = $::cloudwatchlogs::params::region,
   $log_level            = $::cloudwatchlogs::params::log_level,
+  $s3_source            = $::cloudwatchlogs::params::s3_source,
   $logs                 = {}
 ) inherits cloudwatchlogs::params {
 
@@ -94,68 +95,103 @@ class cloudwatchlogs (
       }
     }
     /^(Ubuntu|CentOS|RedHat)$/: {
-      if ! defined(Package['wget']) {
-        package { 'wget':
-          ensure => 'present',
-        }
-      }
-
-      exec { 'cloudwatchlogs-wget':
-        path    => '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin',
-        command => 'wget -O /usr/local/src/awslogs-agent-setup.py https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py',
-        unless  => '[ -e /usr/local/src/awslogs-agent-setup.py ]',
-        require => Package['wget'],
-      }
-
-      file { '/etc/awslogs':
-        ensure => 'directory',
-        owner  => 'root',
-        group  => 'root',
-        mode   => '0755',
-      } ->
-      concat { '/etc/awslogs/awslogs.conf':
-        ensure         => 'present',
-        owner          => 'root',
-        group          => 'root',
-        mode           => '0644',
-        ensure_newline => true,
-        warn           => true,
-      } ->
-      file { '/etc/awslogs/config':
-        ensure => 'directory',
-        owner  => 'root',
-        group  => 'root',
-        mode   => '0755',
-      }
-
-      concat::fragment { 'awslogs-header':
-        target  => '/etc/awslogs/awslogs.conf',
-        content => template('cloudwatchlogs/awslogs_header.erb'),
-        order   => '00',
-      }
-
-      file { '/var/awslogs':
-        ensure => 'directory',
-      } ->
-      file { '/var/awslogs/etc':
-        ensure => 'directory',
-      } ->
-      file { '/var/awslogs/etc/awslogs.conf':
-        ensure => 'link',
-        target => '/etc/awslogs/awslogs.conf',
-      } ->
-      file { '/var/awslogs/etc/config':
-        ensure => 'link',
-        force  => true,
-        target => '/etc/awslogs/config',
-      }
-
       if ($region == undef) {
         fail("region must be defined on ${::operatingsystem}")
       } else {
+        if ! defined(Package['wget']) {
+          package { 'wget':
+            ensure => 'present',
+          }
+        }
+        if ! defined(Package['awscli']) {
+          package { 'awscli':
+            ensure   => 'present',
+            provider => 'pip',
+          }
+        }
+
+        file { '/etc/awslogs':
+          ensure => 'directory',
+          owner  => 'root',
+          group  => 'root',
+          mode   => '0755',
+        } ->
+        concat { '/etc/awslogs/awslogs.conf':
+          ensure         => 'present',
+          owner          => 'root',
+          group          => 'root',
+          mode           => '0644',
+          ensure_newline => true,
+          warn           => true,
+        } ->
+        file { '/etc/awslogs/config':
+          ensure => 'directory',
+          owner  => 'root',
+          group  => 'root',
+          mode   => '0755',
+        }
+
+        concat::fragment { 'awslogs-header':
+          target  => '/etc/awslogs/awslogs.conf',
+          content => template('cloudwatchlogs/awslogs_header.erb'),
+          order   => '00',
+        }
+
+        file { '/var/awslogs':
+          ensure => 'directory',
+        } ->
+        file { '/var/awslogs/etc':
+          ensure => 'directory',
+        } ->
+        file { '/var/awslogs/etc/awslogs.conf':
+          ensure => 'link',
+          target => '/etc/awslogs/awslogs.conf',
+        } ->
+        file { '/var/awslogs/etc/config':
+          ensure => 'link',
+          force  => true,
+          target => '/etc/awslogs/config',
+        }
+
+        if $s3_source == undef {
+          exec { 'cloudwatchlogs-wget':
+            path    => '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin',
+            command => 'wget -O /usr/local/src/awslogs-agent-setup.py https://s3.amazonaws.com/aws-cloudwatch/downloads/latest/awslogs-agent-setup.py',
+            unless  => '[ -e /usr/local/src/awslogs-agent-setup.py ]',
+            require => Package['wget'],
+          }
+
+          $command = "python /usr/local/src/awslogs-agent-setup.py -n -r ${region} -c /etc/awslogs/awslogs.conf"
+        }else {
+          exec { 'cloudwatchlogs-wget':
+            path    => '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin',
+            command => "aws s3 cp $s3_source/awslogs-agent-setup.py /usr/local/src/ --region $region",
+            unless  => '[ -e /usr/local/src/awslogs-agent-setup.py ]',
+            require => Package['awscli'],
+          }
+
+          file { '/tmp/AgentDependencies':
+            ensure => directory,
+            mode   => '0755',
+          }
+
+          archive { "/tmp/AgentDependencies.tar.gz":
+            ensure           => present,
+            extract          => true,
+            extract_path     => '/tmp/AgentDependencies',
+            extract_flags    => '--strip 1 -xf',
+            source           => "$s3_source/AgentDependencies.tar.gz",
+            download_options => ['--region', "$region"],
+            cleanup          => true,
+            require          => File['/tmp/AgentDependencies'],
+          }
+
+          $command = "python /usr/local/src/awslogs-agent-setup.py -n -r $region -c /etc/awslogs/awslogs.conf --dependency-path /tmp/AgentDependencies"
+        }
+
         exec { 'cloudwatchlogs-install':
           path    => '/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin',
-          command => "python /usr/local/src/awslogs-agent-setup.py -n -r ${region} -c /etc/awslogs/awslogs.conf",
+          command => $command,
           onlyif  => '[ -e /usr/local/src/awslogs-agent-setup.py ]',
           unless  => '[ -d /var/awslogs/bin ]',
           require => [
