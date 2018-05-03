@@ -94,7 +94,7 @@ class cloudwatchlogs (
         subscribe  => Concat['/etc/awslogs/awslogs.conf'],
       }
     }
-    /^(Ubuntu|CentOS|RedHat)$/: {
+    /^(Ubuntu|CentOS|RedHat|OracleLinux)$/: {
       if ($region == undef) {
         fail("region must be defined on ${::operatingsystem}")
       } else {
